@@ -208,6 +208,23 @@ st.markdown(
         color: #4b5563;
         line-height: 1.5;
     }
+
+    /* 信息不足降级策略：回答等级徽标 */
+    .confidence-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 12px;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        margin-bottom: 0.7rem;
+    }
+    .confidence-badge.sufficient { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+    .confidence-badge.partial    { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+    .confidence-badge.none       { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+    .confidence-badge.conflict   { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+    .confidence-badge.unknown    { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -228,6 +245,15 @@ for k, v in defaults.items():
     st.session_state.setdefault(k, v)
 
 EXAMPLE_QUERIES = ["2026 年 AI Agent 发展趋势", "Streamlit 最佳实践", "RAG 与联网搜索结合方案"]
+
+# 信息不足降级策略：回答等级 -> (图标, CSS 修饰类, 展示文案)，档位名称需与 prompt.txt 保持一致
+CONFIDENCE_BADGES = {
+    "检索充分": ("🟢", "sufficient", "检索充分 · 正常回答"),
+    "部分支持": ("🟡", "partial", "部分支持 · 已标注缺失信息"),
+    "没有支持": ("🔴", "none", "没有支持 · 明确无法确认"),
+    "来源冲突": ("🟠", "conflict", "来源冲突 · 已并列展示"),
+}
+CONFIDENCE_BADGE_UNKNOWN = ("⚪", "unknown", "未标注回答等级")
 
 # ============================================================
 # 顶部：标题 + 状态说明
@@ -326,6 +352,7 @@ if st.session_state.is_searching:
                         "success": False,
                         "error": f"Agent Pipeline 执行异常: {exc}",
                         "answer": None,
+                        "answer_level": None,
                         "references": [],
                         "evidence": [],
                         "raw": None,
@@ -425,6 +452,7 @@ if result:
                 )
 
                 hit_label = "🟢 命中" if result["need_search"] else "⚪ 未命中"
+                level_icon, _, level_text = CONFIDENCE_BADGES.get(result.get("answer_level"), CONFIDENCE_BADGE_UNKNOWN)
                 st.markdown(
                     f"""
                     <div class="result-card">
@@ -434,6 +462,10 @@ if result:
                     <div class="result-card">
                         <div class="result-title">2️⃣ Evidence Extraction / Builder</div>
                         <div class="result-snippet">从 {len(references)} 条检索结果中提取出 {len(evidence_list)} 条结构化证据（evidence_id / source / title / url / content），详见上方「Evidence（结构化证据）」卡片</div>
+                    </div>
+                    <div class="result-card">
+                        <div class="result-title">3️⃣ 信息不足降级策略（回答等级判定）</div>
+                        <div class="result-snippet">{level_icon} {level_text} —— LLM 依据 Evidence 支持程度自评档位，决定采用「正常回答 / 标注缺失 / 明确无法确认 / 展示冲突」中的哪种输出策略</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -449,6 +481,11 @@ if result:
                 st.markdown('<div class="section-title">🤖 Agent 最终回答</div>', unsafe_allow_html=True)
                 st.markdown(
                     '<div class="section-caption">百度千帆 LLM 基于结构化 Evidence 生成的回答（真实调用，非模拟）</div>',
+                    unsafe_allow_html=True,
+                )
+                icon, css_cls, badge_text = CONFIDENCE_BADGES.get(result.get("answer_level"), CONFIDENCE_BADGE_UNKNOWN)
+                st.markdown(
+                    f'<span class="confidence-badge {css_cls}">{icon} {badge_text}</span>',
                     unsafe_allow_html=True,
                 )
                 st.markdown(result["answer"])
