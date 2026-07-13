@@ -6,11 +6,12 @@ Streamlit + 现代化 UI（ChatGPT / Perplexity / Notion 风格）
     streamlit run app.py
 
 说明：
-    - GUI 直接调用 agent.run_agent(query)，完整链路为：
+    - GUI 直接调用 agent.run_agent(query)，完整链路为 Evidence-based Answer 四段式：
       query -> agent.need_search() -> 加载 prompt.txt
-            -> tools.web_search()（百度千帆 AI 搜索 API，纯检索）
-            -> tools.chat_completion()（百度千帆 LLM API，基于 web_context 生成）-> GUI。
-    - 搜索与 LLM 生成是两个独立的百度千帆接口调用，解耦自此前的"搜索+LLM"融合接口。
+            -> search.web_search()（百度千帆 AI 搜索 API，纯检索）
+            -> evidence.extract_evidence()（结构化证据抽取，产出带 evidence_id 的 Evidence 列表）
+            -> llm.chat_completion()（百度千帆 LLM API，基于 Evidence 生成，约束禁止用自身知识补充）-> GUI。
+    - search / llm 是两个独立的百度千帆接口调用；evidence 是纯本地处理，不发起网络请求。
     - 需要在 .env（本地）或 Streamlit Cloud Secrets（云端）中配置 BAIDU_QIANFAN_API_KEY，
       详见 README.md。
 """
@@ -33,7 +34,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Streamlit Cloud 的 Secrets 桥接到环境变量，供 tools.py 用 os.environ 读取
+# Streamlit Cloud 的 Secrets 桥接到环境变量（search.py / llm.py 会优先读 st.secrets，这里是兜底）
 if not os.environ.get("BAIDU_QIANFAN_API_KEY"):
     try:
         os.environ["BAIDU_QIANFAN_API_KEY"] = st.secrets["BAIDU_QIANFAN_API_KEY"]
@@ -297,7 +298,9 @@ with center:
 # ============================================================
 # 执行真实 Agent Pipeline（two-run 状态机，确保按钮 loading 状态可见）
 # query -> agent.need_search() -> 加载 prompt.txt
-#       -> tools.web_search()（百度千帆搜索 API）-> tools.chat_completion()（百度千帆 LLM API）
+#       -> search.web_search()（百度千帆搜索 API）
+#       -> evidence.extract_evidence()（结构化证据抽取，本地处理）
+#       -> llm.chat_completion()（百度千帆 LLM API，基于证据生成）
 # ============================================================
 if st.session_state.is_searching:
     q = st.session_state.pending_query
@@ -308,10 +311,11 @@ if st.session_state.is_searching:
             with st.status(f"🔍 正在执行 Agent Pipeline「{q}」...", expanded=True) as status:
                 st.write("🧠 Query Understanding：判断是否命中实时性关键词（need_search）...")
                 st.write("📜 加载系统 Prompt（prompt.txt）...")
-                st.write("🌐 Step 1/2：调用百度千帆 AI 搜索接口（web_search，纯检索）...")
-                st.write("🤖 Step 2/2：调用百度千帆 LLM 接口（chat/completions，基于 web_context 生成）...")
+                st.write("🌐 Step 1/3：调用百度千帆 AI 搜索接口（web_search，纯检索）...")
+                st.write("🧩 Step 2/3：Evidence Extraction / Builder（结构化证据抽取，本地处理）...")
+                st.write("🤖 Step 3/3：调用百度千帆 LLM 接口（chat/completions，基于 Evidence 生成）...")
 
-                status.update(label="🌐 正在依次调用百度千帆 搜索 API 与 LLM API（ernie-4.5-turbo-128k）...", state="running")
+                status.update(label="🌐 正在执行 Search → Evidence → LLM 三段式 Pipeline（ernie-4.5-turbo-128k）...", state="running")
                 try:
                     result = agent.run_agent(q)
                 except Exception as exc:  # 兜底：配置缺失 / prompt.txt 缺失等意外错误也要在 UI 上可见，不允许静默失败
@@ -323,6 +327,7 @@ if st.session_state.is_searching:
                         "error": f"Agent Pipeline 执行异常: {exc}",
                         "answer": None,
                         "references": [],
+                        "evidence": [],
                         "raw": None,
                     }
 
@@ -389,20 +394,27 @@ if result:
             with st.container(border=True):
                 st.markdown('<div class="section-title">🧭 Pipeline 执行详情</div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="section-caption">query -&gt; need_search -&gt; prompt.txt -&gt; tools.web_search -&gt; tools.chat_completion</div>',
+                    '<div class="section-caption">query -&gt; need_search -&gt; prompt.txt -&gt; search.web_search -&gt; evidence.extract_evidence -&gt; llm.chat_completion</div>',
                     unsafe_allow_html=True,
                 )
 
                 hit_label = "🟢 命中" if result["need_search"] else "⚪ 未命中"
+                evidence_list = result.get("evidence") or []
                 st.markdown(
                     f"""
                     <div class="result-card">
                         <div class="result-title">1️⃣ Query Understanding（need_search）</div>
                         <div class="result-snippet">{hit_label} 实时性关键词判断，用于可解释性标注（不作为是否调用 LLM 的开关）</div>
                     </div>
+                    <div class="result-card">
+                        <div class="result-title">2️⃣ Evidence Extraction / Builder</div>
+                        <div class="result-snippet">从 {len(references)} 条检索结果中提取出 {len(evidence_list)} 条结构化证据（evidence_id / source / title / url / content），作为 LLM 的唯一事实依据</div>
+                    </div>
                     """,
                     unsafe_allow_html=True,
                 )
+                with st.expander(f"查看结构化 Evidence 列表（{len(evidence_list)} 条）"):
+                    st.code(json.dumps(evidence_list, ensure_ascii=False, indent=2), language="json")
                 with st.expander("查看 prompt.txt 内容（system message）"):
                     st.code(result["system_prompt"], language="text")
                 with st.expander("查看原始 API 响应（raw JSON）"):
@@ -413,7 +425,7 @@ if result:
             with st.container(border=True):
                 st.markdown('<div class="section-title">🤖 Agent 最终回答</div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="section-caption">百度千帆 LLM 基于实时检索生成的回答（真实调用，非模拟）</div>',
+                    '<div class="section-caption">百度千帆 LLM 基于结构化 Evidence 生成的回答（真实调用，非模拟）</div>',
                     unsafe_allow_html=True,
                 )
                 st.markdown(result["answer"])

@@ -1,14 +1,19 @@
 # agent.py
-# 统一入口：query -> need_search -> 加载 prompt.txt -> tools.web_search（检索）-> tools.chat_completion（生成）-> 结构化结果
+# 统一入口：query -> need_search -> 加载 prompt.txt
+#        -> search.web_search（检索）-> evidence.extract_evidence（结构化证据抽取）
+#        -> llm.chat_completion（基于证据生成）-> 结构化结果
 #
-# 与之前的差异：百度千帆的"搜索 + LLM 融合接口"被拆成两个独立调用：
-#   1) tools.web_search()      纯检索，返回 references
-#   2) tools.chat_completion() 纯生成，把 references 拼成 web_context 注入 system_prompt 之后的 user message
-# 两步分别可能失败，因此分别捕获异常，便于在 GUI 上定位是检索失败还是生成失败。
+# Evidence-based Answer 流程：
+#   User Query -> Search -> Evidence Extraction / Evidence Builder -> LLM Answer Generation -> Final Answer
+# 相比"检索结果直接拼给 LLM"，中间插入 evidence.py 把 references 转成带 evidence_id 的
+# 结构化证据，目的是约束 LLM 只能引用已提取的证据作答，而不是绕开检索结果用自身知识补充，
+# 从而降低幻觉与无来源事实。
 
 from pathlib import Path
 
-import tools
+import evidence
+import llm
+import search
 
 PROMPT_PATH = Path(__file__).parent / "prompt.txt"
 
@@ -30,9 +35,10 @@ def load_system_prompt() -> str:
 
 def run_agent(query: str) -> dict:
     """
-    query -> need_search() -> load prompt.txt -> tools.web_search()（检索）-> tools.chat_completion()（生成）-> 结构化结果
+    query -> need_search() -> load prompt.txt
+          -> search.web_search()（检索）-> evidence.extract_evidence()（证据抽取）
+          -> llm.chat_completion()（基于证据生成）-> 结构化结果
 
-    每个 query 都会先发起一次真实检索，再把检索结果作为 web_context 交给 LLM 生成回答；
     need_search() 的判断结果作为可解释性元数据一并返回，用于 GUI 展示"系统是否判断该问题
     具有实时性 / 需要联网核实"，而不是决定是否发起调用的开关。
     """
@@ -46,30 +52,33 @@ def run_agent(query: str) -> dict:
     }
 
     try:
-        search_data = tools.web_search(query)
-    except tools.WebSearchError as exc:
+        search_data = search.web_search(query)
+    except search.SearchError as exc:
         return {
             **base,
             "success": False,
             "error": f"联网搜索失败：{exc}",
             "answer": None,
             "references": [],
+            "evidence": [],
             "raw": None,
         }
 
     references = search_data.get("references", [])
-    web_context = tools.build_web_context(references)
+    evidence_list = evidence.extract_evidence(search_data)
+    evidence_context = evidence.build_evidence_context(evidence_list)
 
     try:
-        chat_data = tools.chat_completion(query, system_prompt, web_context)
-        answer = tools.extract_answer(chat_data)
-    except tools.WebSearchError as exc:
+        chat_data = llm.chat_completion(query, system_prompt, evidence_context)
+        answer = llm.extract_answer(chat_data)
+    except llm.LLMError as exc:
         return {
             **base,
             "success": False,
             "error": f"LLM 生成失败：{exc}",
             "answer": None,
             "references": references,
+            "evidence": evidence_list,
             "raw": {"web_search": search_data},
         }
 
@@ -79,5 +88,6 @@ def run_agent(query: str) -> dict:
         "error": None,
         "answer": answer,
         "references": references,
+        "evidence": evidence_list,
         "raw": {"web_search": search_data, "chat_completion": chat_data},
     }
