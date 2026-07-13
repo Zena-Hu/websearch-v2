@@ -4,6 +4,7 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+import streamlit as st
 
 # ===== API KEY（兼容本地.env 和 Streamlit Cloud Secrets）=====
 API_KEY = (
