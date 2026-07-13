@@ -5,8 +5,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ===== API KEY（从环境变量读取，不再硬编码） =====
-API_KEY = os.environ.get("BAIDU_QIANFAN_API_KEY")
+# ===== API KEY（兼容本地.env 和 Streamlit Cloud Secrets）=====
+API_KEY = (
+    st.secrets["BAIDU_QIANFAN_API_KEY"]
+    if "BAIDU_QIANFAN_API_KEY" in st.secrets
+    else os.environ.get("BAIDU_QIANFAN_API_KEY")
+)
 
 # ===== 百度千帆：搜索与 LLM 两个独立接口 =====
 SEARCH_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
