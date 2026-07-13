@@ -1,13 +1,13 @@
 # agent.py
 # 统一入口：query -> need_search -> 加载 prompt.txt
-#        -> search.web_search（检索）-> evidence.extract_evidence（结构化证据抽取）
-#        -> llm.chat_completion（基于证据生成）-> 结构化结果
+#        -> search.web_search（检索）-> evidence.build_evidence（结构化证据构建）
+#        -> llm.generate_answer（基于证据生成）-> 结构化结果
 #
 # Evidence-based Answer 流程：
-#   User Query -> Search -> Evidence Extraction / Evidence Builder -> LLM Answer Generation -> Final Answer
-# 相比"检索结果直接拼给 LLM"，中间插入 evidence.py 把 references 转成带 evidence_id 的
-# 结构化证据，目的是约束 LLM 只能引用已提取的证据作答，而不是绕开检索结果用自身知识补充，
-# 从而降低幻觉与无来源事实。
+#   query -> search() -> build_evidence() -> llm.generate_answer(query, evidence) -> answer + evidence
+# 相比"检索结果直接拼给 LLM"，中间插入 evidence.build_evidence() 把 references 转成带
+# evidence_id 的结构化证据，LLM 只接触这份证据（不接触原始检索结果），目的是约束 LLM
+# 只能引用已提取的证据作答，而不是绕开检索结果用自身知识补充，从而降低幻觉与无来源事实。
 
 from pathlib import Path
 
@@ -36,8 +36,8 @@ def load_system_prompt() -> str:
 def run_agent(query: str) -> dict:
     """
     query -> need_search() -> load prompt.txt
-          -> search.web_search()（检索）-> evidence.extract_evidence()（证据抽取）
-          -> llm.chat_completion()（基于证据生成）-> 结构化结果
+          -> search.web_search()（检索）-> evidence.build_evidence()（结构化证据构建）
+          -> llm.generate_answer(query, evidence)（基于证据生成）-> answer + evidence
 
     need_search() 的判断结果作为可解释性元数据一并返回，用于 GUI 展示"系统是否判断该问题
     具有实时性 / 需要联网核实"，而不是决定是否发起调用的开关。
@@ -51,8 +51,9 @@ def run_agent(query: str) -> dict:
         "system_prompt": system_prompt,
     }
 
+    # 1. search()
     try:
-        search_data = search.web_search(query)
+        search_results = search.web_search(query)
     except search.SearchError as exc:
         return {
             **base,
@@ -64,12 +65,14 @@ def run_agent(query: str) -> dict:
             "raw": None,
         }
 
-    references = search_data.get("references", [])
-    evidence_list = evidence.extract_evidence(search_data)
-    evidence_context = evidence.build_evidence_context(evidence_list)
+    references = search_results.get("references", [])
 
+    # 2. build_evidence()
+    evidence_list = evidence.build_evidence(search_results)
+
+    # 3. llm.generate_answer(query, evidence)
     try:
-        chat_data = llm.chat_completion(query, system_prompt, evidence_context)
+        chat_data = llm.generate_answer(query, evidence_list, system_prompt)
         answer = llm.extract_answer(chat_data)
     except llm.LLMError as exc:
         return {
@@ -79,9 +82,10 @@ def run_agent(query: str) -> dict:
             "answer": None,
             "references": references,
             "evidence": evidence_list,
-            "raw": {"web_search": search_data},
+            "raw": {"web_search": search_results},
         }
 
+    # 4. return answer + evidence
     return {
         **base,
         "success": True,
@@ -89,5 +93,5 @@ def run_agent(query: str) -> dict:
         "answer": answer,
         "references": references,
         "evidence": evidence_list,
-        "raw": {"web_search": search_data, "chat_completion": chat_data},
+        "raw": {"web_search": search_results, "llm_generate_answer": chat_data},
     }

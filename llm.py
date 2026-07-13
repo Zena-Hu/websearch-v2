@@ -4,6 +4,8 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 
+import evidence as evidence_module
+
 load_dotenv()
 
 
@@ -41,15 +43,18 @@ def _headers() -> dict:
     }
 
 
-def chat_completion(query: str, system_prompt: str, evidence_context: str) -> dict:
+def generate_answer(query: str, evidence: list[dict], system_prompt: str) -> dict:
     """
-    调用百度千帆 LLM 对话接口，基于 system_prompt + evidence_context 生成回答，返回原始响应。
-    evidence_context 由 evidence.build_evidence_context() 生成，作为 user message 中的
-    web_context 注入，供 prompt.txt 中约束的"仅依据 web_context 回答"规则使用。
+    Evidence-based Answer Generation：基于 evidence.build_evidence() 产出的结构化证据
+    生成回答，返回原始响应（choices[0].message.content 即为回答文本，用 extract_answer 取出）。
+    证据在此处被格式化并以 [evidence] 标记注入 user message，供 prompt.txt 中约束的
+    "仅依据 Evidence 回答、且需标注 evidence_id"规则使用；LLM 不接触未提取的原始检索结果，
+    从而被约束只能引用已提取的证据，无法绕开 Evidence 用自身知识补充。
     """
     headers = _headers()
 
-    user_content = query if not evidence_context else f"{query}\n\n[web_context]\n{evidence_context}"
+    evidence_context = evidence_module.format_evidence_for_prompt(evidence)
+    user_content = query if not evidence_context else f"{query}\n\n[evidence]\n{evidence_context}"
 
     payload = {
         "model": CHAT_MODEL,

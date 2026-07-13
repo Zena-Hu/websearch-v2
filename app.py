@@ -9,8 +9,8 @@ Streamlit + 现代化 UI（ChatGPT / Perplexity / Notion 风格）
     - GUI 直接调用 agent.run_agent(query)，完整链路为 Evidence-based Answer 四段式：
       query -> agent.need_search() -> 加载 prompt.txt
             -> search.web_search()（百度千帆 AI 搜索 API，纯检索）
-            -> evidence.extract_evidence()（结构化证据抽取，产出带 evidence_id 的 Evidence 列表）
-            -> llm.chat_completion()（百度千帆 LLM API，基于 Evidence 生成，约束禁止用自身知识补充）-> GUI。
+            -> evidence.build_evidence()（结构化证据构建，产出带 evidence_id 的 Evidence 列表）
+            -> llm.generate_answer(query, evidence)（百度千帆 LLM API，基于 Evidence 生成，约束禁止用自身知识补充）-> GUI。
     - search / llm 是两个独立的百度千帆接口调用；evidence 是纯本地处理，不发起网络请求。
     - 需要在 .env（本地）或 Streamlit Cloud Secrets（云端）中配置 BAIDU_QIANFAN_API_KEY，
       详见 README.md。
@@ -299,8 +299,8 @@ with center:
 # 执行真实 Agent Pipeline（two-run 状态机，确保按钮 loading 状态可见）
 # query -> agent.need_search() -> 加载 prompt.txt
 #       -> search.web_search()（百度千帆搜索 API）
-#       -> evidence.extract_evidence()（结构化证据抽取，本地处理）
-#       -> llm.chat_completion()（百度千帆 LLM API，基于证据生成）
+#       -> evidence.build_evidence()（结构化证据构建，本地处理）
+#       -> llm.generate_answer(query, evidence)（百度千帆 LLM API，基于证据生成）
 # ============================================================
 if st.session_state.is_searching:
     q = st.session_state.pending_query
@@ -391,15 +391,40 @@ if result:
                 else:
                     st.caption("本次回答未附带引用来源（模型判断无需检索或检索为空）。")
 
+            # ---- 新增：Evidence 内容（search -> evidence 结构化证据构建的产出，LLM 的唯一事实来源） ----
+            with st.container(border=True):
+                evidence_list = result.get("evidence") or []
+                st.markdown('<div class="section-title">🧩 Evidence（结构化证据）</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="section-caption">从 {len(references)} 条检索结果中提取出 {len(evidence_list)} 条 Evidence，'
+                    f"每条带 evidence_id，LLM 只能依据这份 Evidence 作答，不得用自身知识补充</div>",
+                    unsafe_allow_html=True,
+                )
+                if evidence_list:
+                    for ev in evidence_list:
+                        st.markdown(
+                            f"""
+                            <div class="result-card">
+                                <div class="result-title">🏷️ [{ev.get('evidence_id', '')}] {ev.get('title', '（无标题）')}</div>
+                                <div class="result-url">{ev.get('url', '')} · {ev.get('source', '')}</div>
+                                <div class="result-snippet">{(ev.get('content') or '')[:160]}…</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    with st.expander(f"查看 Evidence 原始 JSON（{len(evidence_list)} 条）"):
+                        st.code(json.dumps(evidence_list, ensure_ascii=False, indent=2), language="json")
+                else:
+                    st.caption("本次未构建出可用 Evidence（检索结果为空，或检索结果均无正文内容）。")
+
             with st.container(border=True):
                 st.markdown('<div class="section-title">🧭 Pipeline 执行详情</div>', unsafe_allow_html=True)
                 st.markdown(
-                    '<div class="section-caption">query -&gt; need_search -&gt; prompt.txt -&gt; search.web_search -&gt; evidence.extract_evidence -&gt; llm.chat_completion</div>',
+                    '<div class="section-caption">query -&gt; need_search -&gt; prompt.txt -&gt; search.web_search -&gt; evidence.build_evidence -&gt; llm.generate_answer</div>',
                     unsafe_allow_html=True,
                 )
 
                 hit_label = "🟢 命中" if result["need_search"] else "⚪ 未命中"
-                evidence_list = result.get("evidence") or []
                 st.markdown(
                     f"""
                     <div class="result-card">
@@ -408,13 +433,11 @@ if result:
                     </div>
                     <div class="result-card">
                         <div class="result-title">2️⃣ Evidence Extraction / Builder</div>
-                        <div class="result-snippet">从 {len(references)} 条检索结果中提取出 {len(evidence_list)} 条结构化证据（evidence_id / source / title / url / content），作为 LLM 的唯一事实依据</div>
+                        <div class="result-snippet">从 {len(references)} 条检索结果中提取出 {len(evidence_list)} 条结构化证据（evidence_id / source / title / url / content），详见上方「Evidence（结构化证据）」卡片</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-                with st.expander(f"查看结构化 Evidence 列表（{len(evidence_list)} 条）"):
-                    st.code(json.dumps(evidence_list, ensure_ascii=False, indent=2), language="json")
                 with st.expander("查看 prompt.txt 内容（system message）"):
                     st.code(result["system_prompt"], language="text")
                 with st.expander("查看原始 API 响应（raw JSON）"):

@@ -9,8 +9,8 @@ GUI (app.py) -> agent.run_agent(query)
              -> agent.need_search(query)          # 关键词启发式，标注是否命中实时性问题
              -> agent.load_system_prompt()         # 读取 prompt.txt
              -> search.web_search(query)           # 真实调用百度千帆 AI 搜索 API（纯检索）
-             -> evidence.extract_evidence(...)     # 结构化证据抽取（本地处理，不发起网络请求）
-             -> llm.chat_completion(query, prompt, evidence_context)  # 真实调用百度千帆 LLM API，仅依据 Evidence 生成
+             -> evidence.build_evidence(...)       # 结构化证据构建（本地处理，不发起网络请求）
+             -> llm.generate_answer(query, evidence, prompt)  # 真实调用百度千帆 LLM API，仅依据 Evidence 生成
              -> GUI 展示真实回答
 ```
 
